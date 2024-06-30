@@ -1,9 +1,10 @@
-use std::{cell::UnsafeCell, collections::{hash_map::Entry::{Occupied, Vacant}, HashMap}, fmt::Display, mem::{size_of, MaybeUninit}, net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket}, ops::{Deref, DerefMut}, sync::RwLock};
+use std::{cell::UnsafeCell, collections::{hash_map::Entry::{Occupied, Vacant}, HashMap}, mem::{size_of, MaybeUninit}, net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket}, ops::{Deref, DerefMut}, sync::RwLock};
 mod packet;
-mod packet_data;
-use packet::{AddonSignature, PacketFlags};
+use packet::{AddonSignature, Flags};
+mod basic_structures;
+use basic_structures::*;
 mod util;
-use util::InlineArray;
+
 
 
 fn main() {
@@ -23,10 +24,10 @@ fn main() {
 		};
 
 		let header = unsafe { buffer.as_ptr().cast::<packet::Header>().as_ref().unwrap_unchecked() };
-		let mut min_size = packet::MIN_PACKET_SIZE;
+		let mut min_size = packet::MIN_SIZE;
 		if data_len >= min_size {
-			if header.flags.contains(PacketFlags::ContainsTarget) { min_size += size_of::<UserId>(); }
-			if header.flags.contains(PacketFlags::ContainsSource) { min_size += size_of::<UserId>(); }
+			if header.flags.contains(packet::Flags::ContainsTarget) { min_size += size_of::<UserId>(); }
+			if header.flags.contains(packet::Flags::ContainsSource) { min_size += size_of::<UserId>(); }
 		}
 
 		if data_len % 4 != 0 || data_len < min_size || header.length_in_u32s as usize != data_len / 4  {
@@ -64,13 +65,13 @@ fn main() {
 				source_user : MaybeUninit<UserId>,
 			}
 
-			if header.flags.contains(PacketFlags::ContainsTarget) {
+			if header.flags.contains(packet::Flags::ContainsTarget) {
 				// target id goes on the end of the data section
 				let target_user = unsafe{ buffer.as_ptr().add(data_len - size_of::<packet::Checksum>() - size_of::<UserId>()).cast::<UserId>().as_ref().unwrap_unchecked() };
 				match session.members.iter().find(|m| m.user_id == *target_user) {
 					Some(target) => {
 						// only if we find the user do we take the time to set the id
-						if header.flags.contains(PacketFlags::ContainsSource) {
+						if header.flags.contains(packet::Flags::ContainsSource) {
 							let ext_header = unsafe { buffer.as_mut_ptr().cast::<ExtendedHeader>().as_mut().unwrap_unchecked() };
 							ext_header.source_user.write(*source_user_id);
 							// need to redo the crc when we write into the packet
@@ -89,7 +90,7 @@ fn main() {
 				}
 			}
 			else {
-				if header.flags.contains(PacketFlags::ContainsSource) {
+				if header.flags.contains(packet::Flags::ContainsSource) {
 					let ext_header = unsafe { buffer.as_mut_ptr().cast::<ExtendedHeader>().as_mut().unwrap_unchecked() };
 					ext_header.source_user.write(*source_user_id);
 					// need to redo the crc when we write into the packet
@@ -112,9 +113,9 @@ fn main() {
 
 fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr, buffer: &[u8]) {
 	use packet::internal::*;
-	use packet_data::internal::SizedData as _;
+	use packet::data::internal::SizedData as _;
 
-	if buffer.len() < MIN_PACKET_SIZE {
+	if buffer.len() < MIN_SIZE {
 		eprintln!("Internal packet less then min size");
 		return;
 	}
@@ -288,27 +289,4 @@ impl Deref for Address2UserStore {
 }
 impl DerefMut for Address2UserStore {
 	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct SessionId([u32; 4]);
-impl Display for SessionId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&self.0, f) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct UserId([u32; 4]);
-impl Display for UserId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&self.0, f) }
-}
-
-#[derive(Debug, Default)]
-struct Session {
-	pub members : InlineArray<SessionMemberData, 50>,
-}
-
-#[derive(Debug)]
-struct SessionMemberData {
-	pub user_id : UserId,
-	pub address : SocketAddr,
 }
