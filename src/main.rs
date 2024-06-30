@@ -1,9 +1,8 @@
-use std::{cell::UnsafeCell, collections::{hash_map::Entry::{Occupied, Vacant}, HashMap}, fmt::Display, mem::size_of, net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket}, ops::{Deref, DerefMut}, sync::RwLock};
+use std::{cell::UnsafeCell, collections::{hash_map::Entry::{Occupied, Vacant}, HashMap}, fmt::Display, mem::{size_of, MaybeUninit}, net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket}, ops::{Deref, DerefMut}, sync::RwLock};
 mod packet;
 mod packet_data;
-use packet::{internal::PacketType, AddonSignature, PacketChecksum};
+use packet::{AddonSignature, PacketFlags};
 mod util;
-use rand::{rngs::ThreadRng, Rng};
 use util::InlineArray;
 
 
@@ -14,8 +13,6 @@ fn main() {
 	let mut buffer : [u8; 1024] = unsafe { #[allow(invalid_value)] std::mem::MaybeUninit::uninit().assume_init() };
 	let buffer_u32 : &[u32; 1024 / 4] = unsafe{ std::mem::transmute(&buffer) }; // tricking the borrow checker
 
-	let mut rng = rand::thread_rng();
-
 	loop {
 		let (data_len, packet_source_address) = match socket.recv_from(&mut buffer) {
 			Ok(l) => l,
@@ -25,44 +22,95 @@ fn main() {
 			}
 		};
 
-		if data_len < packet::MIN_PACKET_SIZE { continue } // no partial transmits
-
 		let header = unsafe { buffer.as_ptr().cast::<packet::Header>().as_ref().unwrap_unchecked() };
-		if data_len % 4 != 0 || header.u32_length as usize != data_len / 4 {
+		let mut min_size = packet::MIN_PACKET_SIZE;
+		if data_len >= min_size {
+			if header.flags.contains(PacketFlags::ContainsTarget) { min_size += size_of::<UserId>(); }
+			if header.flags.contains(PacketFlags::ContainsSource) { min_size += size_of::<UserId>(); }
+		}
+
+		if data_len % 4 != 0 || data_len < min_size || header.length_in_u32s as usize != data_len / 4  {
 			eprintln!("Invalid length for packet"); //TODO
 			continue;
 		}
 
-		let packet_crc = packet::PacketChecksum(buffer_u32[header.u32_length as usize - 1]);
-		let expected_crc = packet::calculate_crc_from_raw_packet(buffer_u32.as_ptr(), header.u32_length as usize);
-		if expected_crc != packet_crc {
+		let expected_crc = packet::calculate_crc_from_raw_packet(buffer_u32.as_ptr(), header.length_in_u32s as usize);
+		let packet_crc = unsafe { buffer.as_mut_ptr().add(header.length_in_u32s as usize * 4 - size_of::<packet::Checksum>()).cast::<packet::Checksum>().as_mut().unwrap_unchecked() };
+		if expected_crc != *packet_crc {
 			eprintln!("Invalid crc for packet"); //TODO
 			continue;
 		}
 
 		let addon = header.target_addon; // misaligned pointer read
 		if addon == AddonSignature::INTERNAL_PACKET {
-			process_internal_packet(socket, packet_source_address, &buffer[..data_len], &mut rng);
+			process_internal_packet(socket, packet_source_address, &buffer[..data_len]);
 		}
 		else {
 			// not internal, route the packet
-			let Some((_, session_id)) = unsafe { ADDR_TO_SESSION.read().unwrap().get().as_ref().unwrap_unchecked() }.get(&packet_source_address) else {
+			let Some((source_user_id, session_id)) = unsafe { ADDR_TO_SESSION.read().unwrap().get().as_ref().unwrap_unchecked() }.get(&packet_source_address) else {
 				eprintln!("No session for packet with {packet_source_address:?}");
 				continue
 			};
-			let session = unsafe { SESSIONS.read().unwrap().get().as_ref().unwrap_unchecked() }.get(session_id).unwrap();
+			let Some(session) = unsafe { SESSIONS.read().unwrap().get().as_ref().unwrap_unchecked() }.get(session_id) else {
+				eprintln!("{session_id:?} does not exist.");
+				continue
+			};
 
-			let packet_data = &buffer[..data_len];
-			for other in session.members.iter() {
-				if other.address == packet_source_address { continue };
 
-				socket.send_to(packet_data, other.address).unwrap();
+			#[repr(C, packed(4))]
+			struct ExtendedHeader {
+				header : packet::Header,
+				// any required alignment padding after the header will be produced by packed(4)
+				source_user : MaybeUninit<UserId>,
+			}
+
+			if header.flags.contains(PacketFlags::ContainsTarget) {
+				// target id goes on the end of the data section
+				let target_user = unsafe{ buffer.as_ptr().add(data_len - size_of::<packet::Checksum>() - size_of::<UserId>()).cast::<UserId>().as_ref().unwrap_unchecked() };
+				match session.members.iter().find(|m| m.user_id == *target_user) {
+					Some(target) => {
+						// only if we find the user do we take the time to set the id
+						if header.flags.contains(PacketFlags::ContainsSource) {
+							let ext_header = unsafe { buffer.as_mut_ptr().cast::<ExtendedHeader>().as_mut().unwrap_unchecked() };
+							ext_header.source_user.write(*source_user_id);
+							// need to redo the crc when we write into the packet
+							let new_crc = packet::calculate_crc_from_raw_packet(buffer_u32.as_ptr(), header.length_in_u32s as usize);
+							*packet_crc = new_crc;
+						}
+
+						println!("Routing to {target_user:?} in {session_id:?} for targeted packet from {addon:?}.");
+						let packet_data = &buffer[..data_len];
+						socket.send_to(packet_data, target.address).unwrap();
+					},
+					None => {
+						let addon = header.target_addon; // unaligned read
+						eprintln!("Could not find {target_user:?} in {session_id:?} for targeted packet from {addon:?}.");
+					}
+				}
+			}
+			else {
+				if header.flags.contains(PacketFlags::ContainsSource) {
+					let ext_header = unsafe { buffer.as_mut_ptr().cast::<ExtendedHeader>().as_mut().unwrap_unchecked() };
+					ext_header.source_user.write(*source_user_id);
+					// need to redo the crc when we write into the packet
+					let new_crc = packet::calculate_crc_from_raw_packet(buffer_u32.as_ptr(), header.length_in_u32s as usize);
+					*packet_crc = new_crc;
+				}
+
+				println!("Broadcasting in {session_id:?} for packet from {addon:?}.");
+				let packet_data = &buffer[..data_len];
+				// broadcast packet
+				for other in session.members.iter() {
+					if other.address == packet_source_address { continue };
+
+					socket.send_to(packet_data, other.address).unwrap();
+				}
 			}
 		}
 	}
 }
 
-fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr, buffer: &[u8], rng: &mut rand::prelude::ThreadRng) {
+fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr, buffer: &[u8]) {
 	use packet::internal::*;
 	use packet_data::internal::SizedData as _;
 

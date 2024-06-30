@@ -38,3 +38,5 @@ impl<T, const S : usize> Deref for InlineArray<T, S> {
 impl<T, const S : usize> DerefMut for InlineArray<T, S> {
 	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.data[..self.used] }
 }
+
+pub const fn ceil_to_u32_boundary(size : usize) -> usize { (size + 3) / 4 * 4 }
