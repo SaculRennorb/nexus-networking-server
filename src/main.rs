@@ -1,6 +1,5 @@
 use std::{cell::UnsafeCell, collections::{hash_map::Entry::{Occupied, Vacant}, HashMap}, mem::{size_of, MaybeUninit}, net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket}, ops::{Deref, DerefMut}, sync::RwLock};
 mod packet;
-use packet::{AddonSignature, Flags};
 mod basic_structures;
 use basic_structures::*;
 mod util;
@@ -9,6 +8,8 @@ mod util;
 
 fn main() {
 	_ = color_eyre::install();
+	init_statics();
+
 	let socket = &UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1337)).expect("could not bind comm socket :: :1337");
 
 	let mut buffer : [u8; 1024] = unsafe { #[allow(invalid_value)] std::mem::MaybeUninit::uninit().assume_init() };
@@ -252,11 +253,34 @@ fn send_packet<T : packet::Packet, A : ToSocketAddrs>(socket : &UdpSocket, desti
 
 
 
-lazy_static::lazy_static! {
-	static ref SESSIONS : RwLock<SessionStore> = Default::default();
-	static ref USER_TO_SESSION : RwLock<User2SessionStore> = Default::default();
-	static ref ADDR_TO_SESSION : RwLock<Address2UserStore> = Default::default();
+static SESSIONS        : StaticCell<RwLock<SessionStore>>      = StaticCell::uninit();
+static USER_TO_SESSION : StaticCell<RwLock<User2SessionStore>> = StaticCell::uninit();
+static ADDR_TO_SESSION : StaticCell<RwLock<Address2UserStore>> = StaticCell::uninit();
+
+fn init_statics() {
+	SESSIONS        .init(Default::default());
+	USER_TO_SESSION .init(Default::default());
+	ADDR_TO_SESSION .init(Default::default());
 }
+
+
+#[repr(transparent)]
+struct StaticCell<T>(UnsafeCell<MaybeUninit<T>>);
+
+unsafe impl<T : Sync> Sync for StaticCell<T> { }
+
+impl<T> Deref for StaticCell<T> {
+	type Target = T;
+	fn deref(&self) -> &Self::Target { unsafe{ self.0.get().as_ref().unwrap_unchecked().assume_init_ref() } }
+}
+impl<T> DerefMut for StaticCell<T> {
+	fn deref_mut(&mut self) -> &mut Self::Target { unsafe{ self.0.get_mut().assume_init_mut() } }
+}
+
+impl<T> StaticCell<T> {
+	pub const fn uninit() -> Self { Self(UnsafeCell::new(MaybeUninit::uninit())) }
+	pub fn init(&self, value : T) { unsafe { self.0.get().as_mut().unwrap_unchecked() }.write(value); }
+} 
 
 #[derive(Default)]
 struct SessionStore(UnsafeCell<HashMap<SessionId, Session>>);

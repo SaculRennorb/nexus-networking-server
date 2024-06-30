@@ -52,18 +52,11 @@ pub fn calculate_crc_from_raw_packet(packet_as_u32s : *const u32, length_in_u32s
 #[repr(C, packed)]
 #[derive(Debug)]
 pub struct Header {
-	pub target_addon : AddonSignature,
+	pub target_addon : crate::AddonSignature,
 	pub length_in_u32s : u8,
 	pub flags : Flags,
 }
 
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AddonSignature(i32);
-impl AddonSignature {
-	pub const INTERNAL_PACKET : AddonSignature = AddonSignature(0);
-}
 
 bitflags::bitflags!{
 #[repr(transparent)]

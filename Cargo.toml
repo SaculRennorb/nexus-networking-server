@@ -8,5 +8,4 @@ edition = "2021"
 [dependencies]
 bitflags = "2.6.0"
 color-eyre = "0.6.3"
-lazy_static = "1.4.0"
 tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "net"] }

@@ -2,6 +2,14 @@ use crate::util::InlineArray;
 use std::{fmt::Display, net::SocketAddr};
 
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AddonSignature(i32);
+impl AddonSignature {
+	pub const INTERNAL_PACKET : AddonSignature = AddonSignature(0);
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UserId([u32; 4]);
 impl Display for UserId {
