@@ -13,14 +13,18 @@ impl AddonSignature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UserId([u32; 4]);
 impl Display for UserId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&self.0, f) }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_fmt(format_args!("{:08x}{:08x}{:08x}{:08x}", self.0[0], self.0[1], self.0[2], self.0[3]))
+	}
 }
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u32; 4]);
 impl Display for SessionId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&self.0, f) }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_fmt(format_args!("{:08x}{:08x}{:08x}{:08x}", self.0[0], self.0[1], self.0[2], self.0[3]))
+	}
 }
 
 

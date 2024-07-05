@@ -54,7 +54,7 @@ fn main() {
 				continue
 			};
 			let Some(session) = unsafe { SESSIONS.read().unwrap().get().as_ref().unwrap_unchecked() }.get(session_id) else {
-				eprintln!("{session_id:?} does not exist.");
+				eprintln!("session {session_id} does not exist.");
 				continue
 			};
 
@@ -80,13 +80,13 @@ fn main() {
 							*packet_crc = new_crc;
 						}
 
-						println!("Routing to {target_user:?} in {session_id:?} for targeted packet from {addon:?}.");
+						println!("Routing to {target_user} in session {session_id} for targeted packet from {addon:?}.");
 						let packet_data = &buffer[..data_len];
 						socket.send_to(packet_data, target.address).unwrap();
 					},
 					None => {
 						let addon = header.target_addon; // unaligned read
-						eprintln!("Could not find {target_user:?} in {session_id:?} for targeted packet from {addon:?}.");
+						eprintln!("Could not find {target_user} in session {session_id} for targeted packet from {addon:?}.");
 					}
 				}
 			}
@@ -99,7 +99,7 @@ fn main() {
 					*packet_crc = new_crc;
 				}
 
-				println!("Broadcasting in {session_id:?} for packet from {addon:?}.");
+				println!("{source_user_id} is broadcasting packet from {addon:?} in {session_id}.");
 				let packet_data = &buffer[..data_len];
 				// broadcast packet
 				for other in session.members.iter() {
@@ -117,7 +117,7 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 	use packet::data::internal::SizedData as _;
 
 	if buffer.len() < MIN_SIZE {
-		eprintln!("Internal packet less then min size");
+		eprintln!("Internal packet less then min size.");
 		return;
 	}
 	let header = unsafe { buffer.as_ptr().cast::<ExtendedHeader>().as_ref().unwrap_unchecked() };
@@ -126,7 +126,7 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 		PacketType::JoinSession if buffer.len() == size_of::<JoinSession>() => {
 			let packet = unsafe { buffer.as_ptr().cast::<JoinSession>().as_ref().unwrap_unchecked() };
 			
-			println!("{:?} wants to join {:?}", packet.my_user_id, packet.session_id);
+			println!("{} wants to join session {}...", packet.my_user_id, packet.session_id);
 
 			let mut a2s_map_wlock = ADDR_TO_SESSION.write().unwrap();
 			let a2s_entry = a2s_map_wlock.get_mut().entry(packet_source_address);
@@ -137,12 +137,12 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 			let mut sessions_wlock = SESSIONS.write().unwrap();
 			let sessions = sessions_wlock.get_mut();
 
-			let session_id = 'early_bail: { 
-				if let Occupied(ref old_session) = a2s_entry { 
+			let session_id = { 
+				if let Occupied(ref old_session) = a2s_entry { 'early_bail: {
 					// found old session, disconnect from that one and then join the new one
 					let (_, old_id) = old_session.get();
 					// test that we are not joining the same session again
-					if packet.session_id == *old_id { break 'early_bail packet.session_id }
+					if packet.session_id == *old_id { break 'early_bail }
 
 					if let Occupied(mut old_session_) = sessions.entry(*old_id) {
 						let old_session = old_session_.get_mut();
@@ -152,11 +152,11 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 							if old_session.members.used == 0 {
 								old_session_.remove();
 
-								println!("removed empty {:?}", old_id);
+								println!("Removed empty session {old_id}.");
 							}
 						}
 					}
-				}
+				}}
 
 				if let Some(session) = sessions.get_mut(&packet.session_id) {
 					// found a session to join
@@ -176,7 +176,7 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 					drop(a2s_map_wlock);
 					drop(sessions_wlock);
 
-					println!("joined existing {:?}", packet.session_id);
+					println!("Joined existing session.");
 
 					packet.session_id
 				}
@@ -199,7 +199,7 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 							drop(a2s_map_wlock);
 							drop(sessions_wlock);
 							
-							println!("created new session {}", packet.session_id);
+							println!("Created new session {}.", packet.session_id);
 							packet.session_id
 						},
 						Occupied(slot) => {
@@ -209,7 +209,7 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 							drop(a2s_map_wlock);
 							drop(sessions_wlock);
 
-							println!("rejoined old session {id}");
+							println!("Rejoined old session {id}.");
 							id
 						},
 					}
@@ -221,11 +221,12 @@ fn process_internal_packet(socket: &UdpSocket, packet_source_address: SocketAddr
 		},
 		PacketType::LeaveSession if buffer.len() == size_of::<LeaveSession>() => {
 			let packet = unsafe { buffer.as_ptr().cast::<LeaveSession>().as_ref().unwrap_unchecked() };
-			println!("{:?} wants to leave their session", packet.my_user_id);
+			println!("{} wants to leave their session", packet.my_user_id);
 
 			if let Some((_, session_id)) = USER_TO_SESSION.write().unwrap().get_mut().remove(&packet.my_user_id) {
 				remove_from_session(packet.my_user_id, session_id, &mut SESSIONS.write().unwrap().get_mut());
 			}
+			ADDR_TO_SESSION.write().unwrap().get_mut().remove(&packet_source_address);
 		}
 		_ => eprintln!("Unknown internal packet type: {}, len: {} Bytes", header.type_ as u16, buffer.len()),
 	}
@@ -240,7 +241,7 @@ fn remove_from_session(user_id : UserId, session_id : SessionId, sessions : &mut
 			if old_session.members.used == 0 {
 				sessions.remove(&session_id);
 
-				println!("removed empty session {session_id}");
+				println!("Removed empty session {session_id}.");
 			}
 		}
 	}
