@@ -7,7 +7,7 @@ use crate::util::ceil_to_u32_boundary;
 pub trait Packet {
 	fn calculate_crc(&self) -> Checksum {
 		let _self = std::ptr::from_ref(self);
-		let length = unsafe { _self.cast::<Header>().as_ref().unwrap_unchecked() }.length_in_u32s as usize - 1;
+		let length = unsafe { _self.cast::<Header>().as_ref().unwrap_unchecked() }.length_in_u32s as usize;
 		calculate_crc_from_raw_packet(_self.cast(), length)
 	}
 }
